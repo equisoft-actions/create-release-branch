@@ -1,0 +1,73 @@
+name: create-release-branch
+description: |
+  Automatically create release/vX.X.x branch for vX.X.0 tags
+
+  This action should be used in a stand-alone workflow and triggered on `v*.*.0` tags.
+
+  The secret for the PAT used to create the branch should be in an environment only accessible to protected branches.
+
+  Sample workflow:
+
+  ```
+  name: Create release branch
+
+  on:
+    push:
+      tags:
+        - v*.*.0
+
+  jobs:
+    create-release-branch:
+      runs-on: ubuntu-latest
+      environment: release
+      permissions:
+        contents: write
+      steps:
+        - uses: actions/checkout@v3
+          with:
+            fetch-depth: 0
+
+        - uses: equisoft-actions/create-release-branch@v1
+          with:
+            github-token: ${{ secrets.ADMIN_PAT }}
+  ```
+
+inputs:
+  github-token:
+    description: Personal access token with repo access
+    required: true
+  release-branch:
+    description: Branch allowed for release. Default to the repository default branch.
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Validate tagged commit"
+      shell: bash
+      run: |
+        DEFAULT_BRANCH=${{ github.event.repository.default_branch }}
+        RELEASE_BRANCH=${{ inputs.release-branch }}
+        if [[ "$RELEASE_BRANCH" == "" ]]; then
+          RELEASE_BRANCH="$DEFAULT_BRANCH"
+        fi
+
+        git merge-base --is-ancestor "$GITHUB_SHA" "origin/$RELEASE_BRANCH"
+
+        if [ ! $? -eq 0 ] ; then
+          echo ::error ::A release tag must point to a commit in the default branch.
+          exit 1
+        fi
+
+    - name: "Create release branch"
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const versionName = context.ref.replace(/^refs\/tags\/(v[^.]+\.[^.]+\.)0$/, '$1x');
+          github.rest.git.createRef({
+            ref: `refs/heads/release/${versionName}`,
+            sha: context.sha,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
