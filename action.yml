@@ -41,10 +41,52 @@ runs:
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          const versionName = context.ref.replace(/^refs\/tags\/(v[^.]+\.[^.]+\.)0$/, '$1x');
-          github.rest.git.createRef({
-            ref: `refs/heads/release/${versionName}`,
-            sha: context.sha,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-          });
+          const tagPattern = /^refs\/tags\/(v[^.]+\.[^.]+\.)0$/;
+          if (!tagPattern.test(context.ref)) {
+            core.setFailed(`This action must be triggered by a v*.*.0 tag, but got ref "${context.ref}".`);
+            return;
+          }
+
+          const versionName = context.ref.replace(tagPattern, '$1x');
+          const branch = `release/${versionName}`;
+          const ref = `refs/heads/${branch}`;
+
+          try {
+            const existing = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${branch}`,
+            });
+
+            if (existing.data.object.sha === context.sha) {
+              core.info(`Branch ${branch} already exists and points at ${context.sha}. Nothing to do.`);
+            } else {
+              core.warning(`Branch ${branch} already exists and points at ${existing.data.object.sha} (expected ${context.sha}). Leaving it untouched.`);
+            }
+            return;
+          } catch (error) {
+            if (error.status !== 404) {
+              throw error;
+            }
+          }
+
+          try {
+            await github.rest.git.createRef({
+              ref,
+              sha: context.sha,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            core.info(`Created branch ${branch} at ${context.sha}.`);
+          } catch (error) {
+            if (error.status === 422) {
+              core.setFailed(
+                `Failed to create branch ${branch} (HTTP 422: ${error.message}). ` +
+                `This usually means a repository ruleset or branch protection rule is blocking branch creation, ` +
+                `a conflicting reference already exists, or the token lacks permission to create the branch. ` +
+                `Ensure the token used has permission to create refs and can bypass any ruleset that restricts branch creation.`
+              );
+              return;
+            }
+            throw error;
+          }
